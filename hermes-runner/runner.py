@@ -195,23 +195,30 @@ def run_critique(
     """Run critique gate and log result."""
     if cg is None:
         print("[runner] Critique gate not available, logging directly")
-        # Fallback: log directly to CRITIQUE_LOG without critique agent
         _direct_log(task_id, original_envelope, output_envelope, "skipped")
         return {"overall": "pass", "issues": [], "criteria": {}}
 
     try:
-        # Record model in registry
         model = original_envelope.get("assigned_model", "UNKNOWN")
         cg.record_model_call(task_id, model)
-        print(f"[runner] Model recorded: {task_id} -> {model}")
 
         result = cg.run_critique_gate(task_id, original_envelope, output_envelope)
         print(f"[runner] Critique complete: {result.get('overall', 'unknown')}")
-        print(f"[runner] Critique log: {cg.CRITIQUE_LOG}")
+
+        # Verify log was written
+        if CRITIQUE_LOG.exists():
+            lines = CRITIQUE_LOG.read_text().strip().split("\n")
+            print(f"[runner] CRITIQUE_LOG now has {len(lines)} lines")
+        else:
+            print(f"[runner] WARNING: CRITIQUE_LOG missing after critique!")
+
         return result
     except Exception as e:
         print(f"[runner] Critique error: {e}")
         import traceback
+        traceback.print_exc()
+        _direct_log(task_id, original_envelope, output_envelope, f"error: {e}")
+        return {"overall": "fail", "issues": [str(e)], "criteria": {}}
         traceback.print_exc()
         _direct_log(task_id, original_envelope, output_envelope, f"error: {e}")
         return {"overall": "fail", "issues": [str(e)], "criteria": {}}

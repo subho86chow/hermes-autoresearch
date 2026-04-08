@@ -216,6 +216,8 @@ def run_critique_gate(
     # Call critique Hermes instance (separate profile, no file tools)
     verdict = _call_critique_agent(critique_request)
 
+    print(f"[critique_gate] Verdict: {verdict.get('overall', 'UNKNOWN')}, logging to {CRITIQUE_LOG}")
+
     # Runner appends to log — critique agent never touches the log directly
     _append_critique_log(verdict, task_id, critique_request.get("requesting_tier"))
 
@@ -227,6 +229,7 @@ def _call_critique_agent(request: dict) -> dict:
     Spawns the critique Hermes profile as a subprocess.
     Critique agent has: no skill_manage, no file write tools, no terminal.
     """
+    print(f"[critique_gate] Calling critique agent at {CRITIQUE_PROFILE}")
     try:
         result = subprocess.run(
             [
@@ -239,6 +242,10 @@ def _call_critique_agent(request: dict) -> dict:
             text=True,
             timeout=120,
         )
+        print(f"[critique_gate] hermes returncode: {result.returncode}")
+        print(f"[critique_gate] stdout[:200]: {result.stdout[:200]}")
+        if result.stderr:
+            print(f"[critique_gate] stderr[:200]: {result.stderr[:200]}")
         return json.loads(result.stdout)
     except json.JSONDecodeError:
         return {
@@ -302,8 +309,13 @@ def _append_critique_log(verdict: dict, task_id: str, tier: str) -> None:
         issues,
         datetime.now(timezone.utc).isoformat(),
     ])
-    with open(CRITIQUE_LOG, "a") as f:
-        f.write(row + "\n")
+    print(f"[critique_gate] Writing row to {CRITIQUE_LOG}: {row[:80]}...")
+    try:
+        with open(CRITIQUE_LOG, "a") as f:
+            f.write(row + "\n")
+        print(f"[critique_gate] Write OK. File size: {CRITIQUE_LOG.stat().st_size}")
+    except Exception as e:
+        print(f"[critique_gate] WRITE FAILED: {e}")
 
 
 # ---------------------------------------------------------------------------
