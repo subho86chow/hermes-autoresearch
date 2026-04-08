@@ -224,6 +224,100 @@ def run_critique_gate(
     return verdict
 
 
+def _extract_json_from_hermes_output(raw_stdout: str) -> dict | None:
+    """
+    Extract the actual critique JSON from hermes CLI output.
+    Hermes --output-json wraps the model response in an OpenAI-style envelope.
+    The critique JSON can be at various nesting levels:
+      1. Top-level JSON (direct)
+      2. choices[0].message.content (string needing re-parse)
+      3. content / output / message / response fields
+      4. Embedded in markdown code blocks (```json ... ```)
+    """
+    # First try: direct JSON parse of stdout
+    try:
+        parsed = json.loads(raw_stdout)
+        # If it's already a valid critique result, return it
+        if isinstance(parsed, dict) and ("overall" in parsed or "criteria" in parsed):
+            return parsed
+    except json.JSONDecodeError:
+        parsed = None
+
+    # If stdout parsed as JSON but isn't a critique result, dig into it
+    if parsed is not None:
+        # Check OpenAI-style wrapper: choices[0].message.content
+        if "choices" in parsed:
+            for choice in parsed["choices"]:
+                msg = choice.get("message", {})
+                content = msg.get("content", "")
+                extracted = _try_parse_json_string(content)
+                if extracted:
+                    return extracted
+
+        # Check common wrapper fields
+        for key in ["content", "output", "message", "response", "text"]:
+            val = parsed.get(key)
+            if isinstance(val, str):
+                extracted = _try_parse_json_string(val)
+                if extracted:
+                    return extracted
+            elif isinstance(val, dict):
+                if "overall" in val or "criteria" in val:
+                    return val
+
+    # Last resort: scan raw text for JSON in markdown code blocks
+    return _try_parse_json_string(raw_stdout)
+
+
+def _try_parse_json_string(text: str) -> dict | None:
+    """
+    Try to extract a JSON dict from a string.
+    Handles: raw JSON, ```json blocks, ``` blocks, and partial text with JSON.
+    """
+    if not text:
+        return None
+
+    # Try direct parse
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict) and ("overall" in parsed or "criteria" in parsed):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    # Try extracting from markdown code block
+    import re
+    code_block_match = re.search(r'```(?:json)?\s*\n?(.*?)```', text, re.DOTALL)
+    if code_block_match:
+        try:
+            parsed = json.loads(code_block_match.group(1).strip())
+            if isinstance(parsed, dict) and ("overall" in parsed or "criteria" in parsed):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+    # Try finding first { ... } that parses as a critique result
+    depth = 0
+    start = None
+    for i, ch in enumerate(text):
+        if ch == '{':
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0 and start is not None:
+                try:
+                    parsed = json.loads(text[start:i+1])
+                    if isinstance(parsed, dict) and ("overall" in parsed or "criteria" in parsed):
+                        return parsed
+                except json.JSONDecodeError:
+                    pass
+                start = None
+
+    return None
+
+
 def _call_critique_agent(request: dict) -> dict:
     """
     Spawns the critique Hermes profile as a subprocess.
@@ -243,10 +337,20 @@ def _call_critique_agent(request: dict) -> dict:
             timeout=120,
         )
         print(f"[critique_gate] hermes returncode: {result.returncode}")
-        print(f"[critique_gate] stdout[:200]: {result.stdout[:200]}")
+        print(f"[critique_gate] stdout[:500]: {result.stdout[:500]}")
         if result.stderr:
             print(f"[critique_gate] stderr[:200]: {result.stderr[:200]}")
-        return json.loads(result.stdout)
+
+        # Try to extract critique JSON from hermes output wrapper
+        extracted = _extract_json_from_hermes_output(result.stdout)
+        if extracted:
+            print(f"[critique_gate] Extracted critique: overall={extracted.get('overall')}")
+            return extracted
+
+        # If extraction failed, log and return parse error
+        print(f"[critique_gate] Failed to extract critique JSON from output")
+        raise json.JSONDecodeError("No critique JSON found", result.stdout, 0)
+
     except json.JSONDecodeError:
         return {
             "critique_id": str(uuid.uuid4()),
@@ -372,14 +476,35 @@ def invoke_agent(
             text=True,
             timeout=300,
         )
-        output_envelope = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        output_envelope = {
-            "task_id": task_id,
-            "status": "failed",
-            "error": "agent_output_parse_error",
-            "raw_output": result.stdout[:500] if result.stdout else "",
-        }
+        # Try direct JSON parse first
+        try:
+            output_envelope = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            output_envelope = {
+                "task_id": task_id,
+                "status": "failed",
+                "error": "agent_output_parse_error",
+                "raw_output": result.stdout[:500] if result.stdout else "",
+            }
+        else:
+            # Unwrap hermes JSON wrapper if present (choices[0].message.content)
+            if isinstance(output_envelope, dict) and "choices" in output_envelope:
+                for choice in output_envelope["choices"]:
+                    content = choice.get("message", {}).get("content", "")
+                    if content:
+                        try:
+                            parsed = json.loads(content)
+                            if isinstance(parsed, dict) and "task_id" in parsed:
+                                output_envelope = parsed
+                                break
+                        except json.JSONDecodeError:
+                            # Content isn't JSON — store raw content for critique
+                            output_envelope = {
+                                "task_id": task_id,
+                                "raw_output": content,
+                                "parse_error": True,
+                            }
+                            break
     except subprocess.TimeoutExpired:
         output_envelope = {
             "task_id": task_id,

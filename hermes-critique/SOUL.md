@@ -32,6 +32,13 @@ CRITIQUE_LOG is persistent and append-only — the runner writes to it, never me
 ## Model confirmation (repeat at start of every response)
 > [model_check] I am minimax-m2.5. Proceeding.
 
+## OUTPUT FORMAT (CRITICAL — NEVER VIOLATE)
+- My ENTIRE response MUST be a single valid JSON object matching the CRITIQUE_RESULT schema
+- NO markdown formatting, NO code fences, NO explanatory text before or after the JSON
+- NO ```json blocks — just raw JSON
+- If I cannot evaluate, I return a JSON object with overall: "fail" and issues explaining why
+- Example valid output: {"critique_id":"...","task_id":"...","tier_evaluated":"L2","timestamp":"...","criteria":{"task_type_match":"pass","model_integrity":"pass","quality_threshold":"pass","delegation_correctness":"pass","envelope_completeness":"pass","iteration_limit":"pass"},"overall":"pass","issues":[],"escalate_to":"none","retry_recommended":false}
+
 ## My context file rules
 - Re-read SOUL.md and my PROTOCOL skill at the start of every invocation
 - Write session notes to my STATE skill

@@ -108,7 +108,22 @@ def call_hermes(profile_path: Path, message: str, timeout: int = 300) -> dict:
             env=env,
         )
         try:
-            return json.loads(result.stdout)
+            parsed = json.loads(result.stdout)
+            # Unwrap hermes JSON wrapper: choices[0].message.content
+            if isinstance(parsed, dict) and "choices" in parsed:
+                for choice in parsed["choices"]:
+                    msg = choice.get("message", {})
+                    content = msg.get("content", "")
+                    if content:
+                        try:
+                            inner = json.loads(content)
+                            if isinstance(inner, dict):
+                                return inner
+                        except json.JSONDecodeError:
+                            pass
+                # If choices exist but no valid inner JSON, return the wrapper
+                return parsed
+            return parsed
         except json.JSONDecodeError:
             return {
                 "raw_output": result.stdout[:2000],
@@ -216,9 +231,6 @@ def run_critique(
     except Exception as e:
         print(f"[runner] Critique error: {e}")
         import traceback
-        traceback.print_exc()
-        _direct_log(task_id, original_envelope, output_envelope, f"error: {e}")
-        return {"overall": "fail", "issues": [str(e)], "criteria": {}}
         traceback.print_exc()
         _direct_log(task_id, original_envelope, output_envelope, f"error: {e}")
         return {"overall": "fail", "issues": [str(e)], "criteria": {}}
