@@ -8,6 +8,9 @@
 
 set -uo pipefail
 
+# Ensure local bin dirs are in PATH (common on VPS where /root/.local/bin isn't loaded)
+export PATH="$HOME/.local/bin:$HOME/.local/share/hermes:$PATH"
+
 # ---------------------------------------------------------------------------
 # Preflight check
 # ---------------------------------------------------------------------------
