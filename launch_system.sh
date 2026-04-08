@@ -75,6 +75,18 @@ PROTOCOLS_DIR="$BASE_DIR/hermes-protected/protocols"
 CRITIQUE_LOG="$BASE_DIR/hermes-protected/CRITIQUE_LOG.tsv"
 RUNNER_PLUGINS="$BASE_DIR/hermes-runner/plugins"
 
+HERMES_DEFAULT_HOME="$HOME/.hermes"
+HERMES_PROFILES=(
+    "$BASE_DIR/hermes-l0"
+    "$BASE_DIR/hermes-l1-content"
+    "$BASE_DIR/hermes-l1-research"
+    "$BASE_DIR/hermes-l2-writer"
+    "$BASE_DIR/hermes-l2-researcher"
+    "$BASE_DIR/hermes-l2-trend-analyst"
+    "$BASE_DIR/hermes-critique"
+    "$BASE_DIR/hermes-runner"
+)
+
 SOUL_FILES=(
     "$BASE_DIR/hermes-l0/SOUL.md"
     "$BASE_DIR/hermes-l1-content/SOUL.md"
@@ -91,10 +103,45 @@ echo "========================================"
 echo ""
 
 # ---------------------------------------------------------------------------
+# Step 0: Sync API keys and config into each profile
+# ---------------------------------------------------------------------------
+
+echo "[0/6] Syncing Hermes config + API keys into profiles..."
+
+CONFIG_SOURCE="$HERMES_DEFAULT_HOME/config.yaml"
+ENV_SOURCE="$HERMES_DEFAULT_HOME/.env"
+
+if [ ! -f "$CONFIG_SOURCE" ]; then
+    echo "ERROR: Hermes config not found at $CONFIG_SOURCE"
+    echo "Run 'hermes setup' first."
+    exit 1
+fi
+
+if [ ! -f "$ENV_SOURCE" ]; then
+    echo "WARNING: No .env file at $ENV_SOURCE (API keys may be missing)"
+fi
+
+for profile in "${HERMES_PROFILES[@]}"; do
+    if [ -d "$profile" ]; then
+        # Copy config.yaml (profile has its own, but API provider config is needed)
+        if [ -f "$CONFIG_SOURCE" ] && [ ! -f "$profile/.env" ]; then
+            cp "$CONFIG_SOURCE" "$profile/config.user.yaml" 2>/dev/null
+        fi
+        # Copy .env with API keys
+        if [ -f "$ENV_SOURCE" ]; then
+            cp "$ENV_SOURCE" "$profile/.env"
+        fi
+        echo "  Synced: $profile"
+    fi
+done
+
+echo ""
+
+# ---------------------------------------------------------------------------
 # Step 1: Lock all protected files (chmod 444)
 # ---------------------------------------------------------------------------
 
-echo "[1/5] Locking protected files..."
+echo "[1/6] Locking protected files..."
 
 # Lock protocol SKILL.md files
 find "$PROTOCOLS_DIR" -name "SKILL.md" -exec chmod 444 {} \; 2>/dev/null
@@ -116,7 +163,7 @@ echo ""
 # Step 2: Initialize CRITIQUE_LOG if needed
 # ---------------------------------------------------------------------------
 
-echo "[2/5] Initializing CRITIQUE_LOG..."
+echo "[2/6] Initializing CRITIQUE_LOG..."
 
 mkdir -p "$(dirname "$CRITIQUE_LOG")"
 if [ ! -f "$CRITIQUE_LOG" ] || [ ! -s "$CRITIQUE_LOG" ]; then
@@ -132,7 +179,7 @@ echo ""
 # Step 3: Build integrity manifest
 # ---------------------------------------------------------------------------
 
-echo "[3/5] Building integrity manifest..."
+echo "[3/6] Building integrity manifest..."
 
 # Update critique_gate.py paths to match BASE_DIR before import
 python3 -c "
@@ -166,7 +213,7 @@ echo ""
 # Step 4: Verify integrity
 # ---------------------------------------------------------------------------
 
-echo "[4/5] Verifying integrity..."
+echo "[4/6] Verifying integrity..."
 
 python3 -c "
 import sys, os
@@ -194,7 +241,7 @@ echo ""
 # Step 5: Start L0 Meta-Orchestrator
 # ---------------------------------------------------------------------------
 
-echo "[5/5] Starting L0 Meta-Orchestrator..."
+echo "[5/6] Starting L0 Meta-Orchestrator..."
 echo ""
 echo "========================================"
 echo " System Ready"
@@ -212,5 +259,12 @@ echo "   CQ:  HERMES_HOME=$BASE_DIR/hermes-critique hermes chat"
 echo ""
 echo " Launching L0..."
 echo ""
+
+# Source .env if available (loads API keys into environment)
+if [ -f "$BASE_DIR/hermes-l0/.env" ]; then
+    set -a
+    source "$BASE_DIR/hermes-l0/.env"
+    set +a
+fi
 
 HERMES_HOME="$BASE_DIR/hermes-l0" hermes chat
