@@ -32,8 +32,10 @@ BASE_DIR = Path(os.environ.get(
     Path(__file__).resolve().parent.parent
 ))
 
-# Add plugins to path
-sys.path.insert(0, str(BASE_DIR / "hermes-runner" / "plugins"))
+# Set env var BEFORE importing critique_gate so it picks up correct paths
+os.environ["HERMES_AUTORESEARCH_BASE"] = str(BASE_DIR)
+
+print(f"[runner] Base directory: {BASE_DIR}")
 
 PROFILES = {
     "L0":                BASE_DIR / "hermes-l0",
@@ -48,25 +50,22 @@ PROFILES = {
 CRITIQUE_LOG = BASE_DIR / "hermes-protected" / "CRITIQUE_LOG.tsv"
 CAMPAIGN_DIR = BASE_DIR / "hermes-protected" / "campaigns"
 
-# Import critique gate (with path patching)
+# Verify paths exist
+print(f"[runner] Critique log path: {CRITIQUE_LOG}")
+print(f"[runner] Critique log exists: {CRITIQUE_LOG.exists()}")
+print(f"[runner] Protected dir exists: {(BASE_DIR / 'hermes-protected').exists()}")
+
+# Add plugins to path
+sys.path.insert(0, str(BASE_DIR / "hermes-runner" / "plugins"))
+
+# Import critique gate — env var is already set so paths resolve correctly
 try:
     import critique_gate as cg
-    cg.PROTECTED_BASE = BASE_DIR / "hermes-protected"
-    cg.MANIFEST_PATH = cg.PROTECTED_BASE / ".integrity_manifest.json"
-    cg.CRITIQUE_LOG = CRITIQUE_LOG
-    cg.CRITIQUE_PROFILE = PROFILES["critique"]
-    cg.PROTECTED_FILES = [
-        PROFILES["L0"] / "SOUL.md",
-        PROFILES["L1-content"] / "SOUL.md",
-        PROFILES["L1-research"] / "SOUL.md",
-        PROFILES["L2-writer"] / "SOUL.md",
-        PROFILES["L2-researcher"] / "SOUL.md",
-        PROFILES["L2-trend-analyst"] / "SOUL.md",
-        PROFILES["critique"] / "SOUL.md",
-    ]
-    cg.PROTECTED_DIRS = [cg.PROTECTED_BASE / "protocols"]
-except ImportError:
-    print("[runner] WARNING: critique_gate not found, running without critique")
+    print(f"[runner] critique_gate loaded OK")
+    print(f"[runner] cg.CRITIQUE_LOG = {cg.CRITIQUE_LOG}")
+    print(f"[runner] cg.PROTECTED_BASE = {cg.PROTECTED_BASE}")
+except ImportError as e:
+    print(f"[runner] WARNING: critique_gate import failed: {e}")
     cg = None
 
 
@@ -195,14 +194,51 @@ def run_critique(
 ) -> dict:
     """Run critique gate and log result."""
     if cg is None:
-        print("[runner] Critique gate not available, skipping")
+        print("[runner] Critique gate not available, logging directly")
+        # Fallback: log directly to CRITIQUE_LOG without critique agent
+        _direct_log(task_id, original_envelope, output_envelope, "skipped")
         return {"overall": "pass", "issues": [], "criteria": {}}
 
     try:
-        return cg.run_critique_gate(task_id, original_envelope, output_envelope)
+        # Record model in registry
+        model = original_envelope.get("assigned_model", "UNKNOWN")
+        cg.record_model_call(task_id, model)
+        print(f"[runner] Model recorded: {task_id} -> {model}")
+
+        result = cg.run_critique_gate(task_id, original_envelope, output_envelope)
+        print(f"[runner] Critique complete: {result.get('overall', 'unknown')}")
+        print(f"[runner] Critique log: {cg.CRITIQUE_LOG}")
+        return result
     except Exception as e:
         print(f"[runner] Critique error: {e}")
+        import traceback
+        traceback.print_exc()
+        _direct_log(task_id, original_envelope, output_envelope, f"error: {e}")
         return {"overall": "fail", "issues": [str(e)], "criteria": {}}
+
+
+def _direct_log(task_id: str, original: dict, output: dict, status: str) -> None:
+    """Direct write to CRITIQUE_LOG when critique gate is unavailable."""
+    try:
+        CRITIQUE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        if not CRITIQUE_LOG.exists() or CRITIQUE_LOG.stat().st_size == 0:
+            CRITIQUE_LOG.write_text(
+                "critique_id\ttask_id\ttier\toverall\tmodel_integrity\tissues\ttimestamp\n"
+            )
+        row = "\t".join([
+            str(uuid.uuid4()),
+            task_id,
+            original.get("to_tier", "?"),
+            status,
+            "unknown",
+            f"runner_direct_log",
+            datetime.now(timezone.utc).isoformat(),
+        ])
+        with open(CRITIQUE_LOG, "a") as f:
+            f.write(row + "\n")
+        print(f"[runner] Direct-logged to {CRITIQUE_LOG}")
+    except Exception as e:
+        print(f"[runner] Failed to direct-log: {e}")
 
 
 # ---------------------------------------------------------------------------
