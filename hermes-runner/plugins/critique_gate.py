@@ -22,24 +22,25 @@ from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration — uses HERMES_AUTORESEARCH_BASE env var or defaults to ~
+# Set HERMES_AUTORESEARCH_BASE to the repo root on VPS
 # ---------------------------------------------------------------------------
 
-HOME = Path(os.environ.get("HERMES_HOME", Path.home()))
-PROTECTED_BASE = Path.home() / ".hermes-protected"
+_BASE = Path(os.environ.get("HERMES_AUTORESEARCH_BASE", Path.home()))
+PROTECTED_BASE = _BASE / "hermes-protected"
 MANIFEST_PATH = PROTECTED_BASE / ".integrity_manifest.json"
 CRITIQUE_LOG = PROTECTED_BASE / "CRITIQUE_LOG.tsv"
-CRITIQUE_PROFILE = Path.home() / ".hermes-critique"
+CRITIQUE_PROFILE = _BASE / "hermes-critique"
 
 PROTECTED_FILES: list[Path] = [
     # SOUL.md files (IDENTITY — chmod 444)
-    Path.home() / ".hermes-l0" / "SOUL.md",
-    Path.home() / ".hermes-l1-content" / "SOUL.md",
-    Path.home() / ".hermes-l1-research" / "SOUL.md",
-    Path.home() / ".hermes-l2-writer" / "SOUL.md",
-    Path.home() / ".hermes-l2-researcher" / "SOUL.md",
-    Path.home() / ".hermes-l2-trend-analyst" / "SOUL.md",
-    Path.home() / ".hermes-critique" / "SOUL.md",
+    _BASE / "hermes-l0" / "SOUL.md",
+    _BASE / "hermes-l1-content" / "SOUL.md",
+    _BASE / "hermes-l1-research" / "SOUL.md",
+    _BASE / "hermes-l2-writer" / "SOUL.md",
+    _BASE / "hermes-l2-researcher" / "SOUL.md",
+    _BASE / "hermes-l2-trend-analyst" / "SOUL.md",
+    _BASE / "hermes-critique" / "SOUL.md",
 ]
 
 PROTECTED_DIRS: list[Path] = [

@@ -3,6 +3,10 @@
 # Usage: ./monitor.sh          (single snapshot)
 #        watch ./monitor.sh    (auto-refresh every 2s)
 
+# Auto-detect base directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="$SCRIPT_DIR"
+
 BOLD="\033[1m"
 GREEN="\033[32m"
 RED="\033[31m"
@@ -11,24 +15,26 @@ CYAN="\033[36m"
 DIM="\033[2m"
 RESET="\033[0m"
 
-CRITIQUE_LOG="$HOME/.hermes-protected/CRITIQUE_LOG.tsv"
-MANIFEST="$HOME/.hermes-protected/.integrity_manifest.json"
+CRITIQUE_LOG="$BASE_DIR/hermes-protected/CRITIQUE_LOG.tsv"
+MANIFEST="$BASE_DIR/hermes-protected/.integrity_manifest.json"
 
 echo ""
 echo "${BOLD}════════════════════════════════════════════════════${RESET}"
-echo "${BOLD}  Hermes Agent System — Status Dashboard${RESET}"
+echo "${BOLD}  Hermes Agent System - Status Dashboard${RESET}"
 echo "${BOLD}════════════════════════════════════════════════════${RESET}"
 echo ""
 
 # ── System Time ──────────────────────────────────────────────────────────────
 echo "${CYAN}Timestamp:${RESET}  $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+echo "${CYAN}Base dir:${RESET}   $BASE_DIR"
 echo ""
 
 # ── Profile Status ───────────────────────────────────────────────────────────
 echo "${BOLD}Profiles:${RESET}"
 for profile in hermes-l0 hermes-l1-content hermes-l1-research hermes-l2-writer hermes-l2-researcher hermes-l2-trend-analyst hermes-critique hermes-runner; do
-    if [ -d "$HOME/$profile" ]; then
-        soul="$HOME/$profile/SOUL.md"
+    dir="$BASE_DIR/$profile"
+    if [ -d "$dir" ]; then
+        soul="$dir/SOUL.md"
         if [ -f "$soul" ]; then
             model=$(grep "^model:" "$soul" 2>/dev/null | head -1 | sed 's/model: *//')
             perms=$(stat -f "%Lp" "$soul" 2>/dev/null || stat -c "%a" "$soul" 2>/dev/null)
@@ -42,7 +48,7 @@ for profile in hermes-l0 hermes-l1-content hermes-l1-research hermes-l2-writer h
             printf "  %-22s ${RED}SOUL.md MISSING${RESET}\n" "$profile"
         fi
     else
-        printf "  %-22s ${DIM}not deployed${RESET}\n" "$profile"
+        printf "  %-22s ${DIM}not found${RESET}\n" "$profile"
     fi
 done
 echo ""
@@ -55,7 +61,7 @@ if [ -f "$MANIFEST" ]; then
     echo "  Files tracked: $file_count"
     echo "  Last built:    $manifest_age"
 else
-    echo "  ${RED}NOT FOUND — run launch_system.sh first${RESET}"
+    echo "  ${RED}NOT FOUND - run launch_system.sh first${RESET}"
 fi
 echo ""
 
@@ -85,9 +91,9 @@ echo ""
 
 # ── Protocol Files ───────────────────────────────────────────────────────────
 echo "${BOLD}Protocol Files (read-only):${RESET}"
-proto_count=$(find "$HOME/.hermes-protected/protocols" -name "SKILL.md" 2>/dev/null | wc -l | tr -d ' ')
+proto_count=$(find "$BASE_DIR/hermes-protected/protocols" -name "SKILL.md" 2>/dev/null | wc -l | tr -d ' ')
 if [ "$proto_count" -gt 0 ]; then
-    find "$HOME/.hermes-protected/protocols" -name "SKILL.md" -exec sh -c '
+    find "$BASE_DIR/hermes-protected/protocols" -name "SKILL.md" -exec sh -c '
         perms=$(stat -f "%Lp" "$1" 2>/dev/null || stat -c "%a" "$1" 2>/dev/null)
         parent=$(basename $(dirname "$1"))
         if [ "$perms" = "444" ]; then
@@ -102,5 +108,6 @@ fi
 echo ""
 
 echo "${DIM}──────────────────────────────────────────────────────${RESET}"
-echo "${DIM} Use: watch ./monitor.sh   for live refresh${RESET}"
+echo "${DIM} Base: $BASE_DIR${RESET}"
+echo "${DIM} Use: watch -n 5 ./monitor.sh   for live refresh${RESET}"
 echo ""

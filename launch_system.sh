@@ -5,20 +5,28 @@
 # Usage:
 #   chmod +x launch_system.sh
 #   ./launch_system.sh
+#
+# Works from any directory — auto-detects BASE_DIR from script location.
 
 set -uo pipefail
 
-# Ensure local bin dirs are in PATH (common on VPS where /root/.local/bin isn't loaded)
+# Ensure local bin dirs are in PATH
 export PATH="$HOME/.local/bin:$HOME/.local/share/hermes:$PATH"
 
 # ---------------------------------------------------------------------------
-# Preflight check
+# Auto-detect base directory (wherever this script lives)
+# ---------------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="$SCRIPT_DIR"
+
+# ---------------------------------------------------------------------------
+# Preflight checks
 # ---------------------------------------------------------------------------
 
 if ! command -v hermes &> /dev/null; then
-    echo "ERROR: 'hermes' CLI not found."
-    echo "Install it first: npm install -g @anthropic-ai/hermes"
-    echo "Or check: https://github.com/nicholasgriffintn/hermes"
+    echo "ERROR: 'hermes' CLI not found in PATH."
+    echo "Found paths checked: $PATH"
+    echo "Install: https://github.com/nicholasgriffintn/hermes"
     exit 1
 fi
 
@@ -28,28 +36,57 @@ if ! command -v python3 &> /dev/null; then
 fi
 
 echo "Preflight: hermes=$(command -v hermes), python3=$(command -v python3)"
+echo "Base dir:  $BASE_DIR"
 echo ""
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Verify file structure exists
 # ---------------------------------------------------------------------------
 
-PROTOCOLS_DIR="$HOME/.hermes-protected/protocols"
-CRITIQUE_LOG="$HOME/.hermes-protected/CRITIQUE_LOG.tsv"
-RUNNER_PLUGINS="$HOME/.hermes-runner/plugins"
+required_dirs=(
+    "$BASE_DIR/hermes-protected/protocols"
+    "$BASE_DIR/hermes-l0"
+    "$BASE_DIR/hermes-runner/plugins"
+)
+
+missing=0
+for d in "${required_dirs[@]}"; do
+    if [ ! -d "$d" ]; then
+        echo "ERROR: Missing directory: $d"
+        missing=$((missing + 1))
+    fi
+done
+
+if [ "$missing" -gt 0 ]; then
+    echo ""
+    echo "Expected structure at: $BASE_DIR"
+    echo "  hermes-protected/protocols/"
+    echo "  hermes-l0/"
+    echo "  hermes-runner/plugins/"
+    echo "  ..."
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Configuration (all paths relative to BASE_DIR)
+# ---------------------------------------------------------------------------
+
+PROTOCOLS_DIR="$BASE_DIR/hermes-protected/protocols"
+CRITIQUE_LOG="$BASE_DIR/hermes-protected/CRITIQUE_LOG.tsv"
+RUNNER_PLUGINS="$BASE_DIR/hermes-runner/plugins"
 
 SOUL_FILES=(
-    "$HOME/.hermes-l0/SOUL.md"
-    "$HOME/.hermes-l1-content/SOUL.md"
-    "$HOME/.hermes-l1-research/SOUL.md"
-    "$HOME/.hermes-l2-writer/SOUL.md"
-    "$HOME/.hermes-l2-researcher/SOUL.md"
-    "$HOME/.hermes-l2-trend-analyst/SOUL.md"
-    "$HOME/.hermes-critique/SOUL.md"
+    "$BASE_DIR/hermes-l0/SOUL.md"
+    "$BASE_DIR/hermes-l1-content/SOUL.md"
+    "$BASE_DIR/hermes-l1-research/SOUL.md"
+    "$BASE_DIR/hermes-l2-writer/SOUL.md"
+    "$BASE_DIR/hermes-l2-researcher/SOUL.md"
+    "$BASE_DIR/hermes-l2-trend-analyst/SOUL.md"
+    "$BASE_DIR/hermes-critique/SOUL.md"
 )
 
 echo "========================================"
-echo " Hermes Agent System — Launch Sequence"
+echo " Hermes Agent System - Launch Sequence"
 echo "========================================"
 echo ""
 
@@ -97,11 +134,29 @@ echo ""
 
 echo "[3/5] Building integrity manifest..."
 
+# Update critique_gate.py paths to match BASE_DIR before import
 python3 -c "
-import sys
+import sys, os
+os.environ['HERMES_AUTORESEARCH_BASE'] = '$BASE_DIR'
 sys.path.insert(0, '$RUNNER_PLUGINS')
-from critique_gate import build_integrity_manifest
-manifest = build_integrity_manifest()
+
+# Patch paths before importing
+import critique_gate as cg
+cg.PROTECTED_BASE = __import__('pathlib').Path('$BASE_DIR/hermes-protected')
+cg.MANIFEST_PATH = cg.PROTECTED_BASE / '.integrity_manifest.json'
+cg.CRITIQUE_LOG = cg.PROTECTED_BASE / 'CRITIQUE_LOG.tsv'
+cg.CRITIQUE_PROFILE = __import__('pathlib').Path('$BASE_DIR/hermes-critique')
+cg.PROTECTED_FILES = [
+    __import__('pathlib').Path('$BASE_DIR/hermes-l0/SOUL.md'),
+    __import__('pathlib').Path('$BASE_DIR/hermes-l1-content/SOUL.md'),
+    __import__('pathlib').Path('$BASE_DIR/hermes-l1-research/SOUL.md'),
+    __import__('pathlib').Path('$BASE_DIR/hermes-l2-writer/SOUL.md'),
+    __import__('pathlib').Path('$BASE_DIR/hermes-l2-researcher/SOUL.md'),
+    __import__('pathlib').Path('$BASE_DIR/hermes-l2-trend-analyst/SOUL.md'),
+    __import__('pathlib').Path('$BASE_DIR/hermes-critique/SOUL.md'),
+]
+cg.PROTECTED_DIRS = [cg.PROTECTED_BASE / 'protocols']
+manifest = cg.build_integrity_manifest()
 print(f'  Manifest: {len(manifest)} files hashed')
 "
 
@@ -114,10 +169,22 @@ echo ""
 echo "[4/5] Verifying integrity..."
 
 python3 -c "
-import sys
+import sys, os
 sys.path.insert(0, '$RUNNER_PLUGINS')
-from critique_gate import verify_integrity
-verify_integrity()
+import critique_gate as cg
+cg.PROTECTED_BASE = __import__('pathlib').Path('$BASE_DIR/hermes-protected')
+cg.MANIFEST_PATH = cg.PROTECTED_BASE / '.integrity_manifest.json'
+cg.PROTECTED_FILES = [
+    __import__('pathlib').Path('$BASE_DIR/hermes-l0/SOUL.md'),
+    __import__('pathlib').Path('$BASE_DIR/hermes-l1-content/SOUL.md'),
+    __import__('pathlib').Path('$BASE_DIR/hermes-l1-research/SOUL.md'),
+    __import__('pathlib').Path('$BASE_DIR/hermes-l2-writer/SOUL.md'),
+    __import__('pathlib').Path('$BASE_DIR/hermes-l2-researcher/SOUL.md'),
+    __import__('pathlib').Path('$BASE_DIR/hermes-l2-trend-analyst/SOUL.md'),
+    __import__('pathlib').Path('$BASE_DIR/hermes-critique/SOUL.md'),
+]
+cg.PROTECTED_DIRS = [cg.PROTECTED_BASE / 'protocols']
+cg.verify_integrity()
 print('  All integrity checks PASSED')
 "
 
@@ -133,20 +200,17 @@ echo "========================================"
 echo " System Ready"
 echo "========================================"
 echo ""
-echo " Profiles available:"
-echo "   L0:  HERMES_HOME=~/.hermes-l0 hermes chat"
-echo "   L1c: HERMES_HOME=~/.hermes-l1-content hermes chat"
-echo "   L1r: HERMES_HOME=~/.hermes-l1-research hermes chat"
-echo "   L2w: HERMES_HOME=~/.hermes-l2-writer hermes chat"
-echo "   L2r: HERMES_HOME=~/.hermes-l2-researcher hermes chat"
-echo "   L2t: HERMES_HOME=~/.hermes-l2-trend-analyst hermes chat"
-echo "   CQ:  HERMES_HOME=~/.hermes-critique hermes chat"
+echo " Profiles at: $BASE_DIR"
 echo ""
-echo " Runner commands:"
-echo "   python3 ~/.hermes-runner/plugins/critique_gate.py build_manifest"
-echo "   python3 ~/.hermes-runner/plugins/critique_gate.py verify"
+echo "   L0:  HERMES_HOME=$BASE_DIR/hermes-l0 hermes chat"
+echo "   L1c: HERMES_HOME=$BASE_DIR/hermes-l1-content hermes chat"
+echo "   L1r: HERMES_HOME=$BASE_DIR/hermes-l1-research hermes chat"
+echo "   L2w: HERMES_HOME=$BASE_DIR/hermes-l2-writer hermes chat"
+echo "   L2r: HERMES_HOME=$BASE_DIR/hermes-l2-researcher hermes chat"
+echo "   L2t: HERMES_HOME=$BASE_DIR/hermes-l2-trend-analyst hermes chat"
+echo "   CQ:  HERMES_HOME=$BASE_DIR/hermes-critique hermes chat"
 echo ""
 echo " Launching L0..."
 echo ""
 
-HERMES_HOME="$HOME/.hermes-l0" hermes chat
+HERMES_HOME="$BASE_DIR/hermes-l0" hermes chat
