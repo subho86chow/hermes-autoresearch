@@ -6,7 +6,26 @@
 #   chmod +x launch_system.sh
 #   ./launch_system.sh
 
-set -euo pipefail
+set -uo pipefail
+
+# ---------------------------------------------------------------------------
+# Preflight check
+# ---------------------------------------------------------------------------
+
+if ! command -v hermes &> /dev/null; then
+    echo "ERROR: 'hermes' CLI not found."
+    echo "Install it first: npm install -g @anthropic-ai/hermes"
+    echo "Or check: https://github.com/nicholasgriffintn/hermes"
+    exit 1
+fi
+
+if ! command -v python3 &> /dev/null; then
+    echo "ERROR: 'python3' not found. Required for critique_gate plugin."
+    exit 1
+fi
+
+echo "Preflight: hermes=$(command -v hermes), python3=$(command -v python3)"
+echo ""
 
 # ---------------------------------------------------------------------------
 # Configuration
