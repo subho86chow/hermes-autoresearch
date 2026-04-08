@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema",
+  "title": "HermesEnvelope",
+  "version": "1.1",
+  "required": [
+    "envelope_version",
+    "from_tier",
+    "to_tier",
+    "task_id",
+    "assigned_model",
+    "task_type",
+    "campaign_ref",
+    "critique_required",
+    "payload"
+  ],
+  "properties": {
+    "envelope_version":  { "type": "string", "const": "1.1" },
+    "from_tier":         { "type": "string", "enum": ["L0","L1","L2","critique"] },
+    "to_tier":           { "type": "string", "enum": ["L0","L1","L2","critique"] },
+    "task_id":           { "type": "string", "pattern": "^[a-z0-9-]+$" },
+    "assigned_model":    {
+                           "type": "string",
+                           "enum": ["minimax-m2.5","kimi-k2.5","fallback"],
+                           "description": "MANDATORY. If absent, receiving agent must reject. Runner verifies this matches actual model called."
+                         },
+    "task_type":         {
+                           "type": "string",
+                           "enum": [
+                             "content_writing",
+                             "content_validation",
+                             "web_research",
+                             "trend_analysis",
+                             "orchestration",
+                             "CRITIQUE_REQUEST"
+                           ]
+                         },
+    "campaign_ref":      { "type": "string" },
+    "critique_required": { "type": "boolean", "description": "Informational only. Runner always runs critique regardless of this flag." },
+    "parent_state_ref":  { "type": "string", "description": "e.g. STATE_L1.md#task-42" },
+    "retry_count":       { "type": "integer", "default": 0 },
+    "payload":           { "type": "object" }
+  },
+  "additionalProperties": false
+}

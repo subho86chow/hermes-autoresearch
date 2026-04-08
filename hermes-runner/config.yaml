@@ -1,0 +1,7 @@
+# Hermes Profile: Runner
+# HERMES_HOME=~/.hermes-runner
+# This is the orchestration layer — not a conversation agent
+
+skills:
+  external_dirs:
+    - ~/.hermes-protected/protocols/   # Access to protocol files for integrity checks

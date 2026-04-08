@@ -1,0 +1,8 @@
+# Hermes Profile: L2 Writer
+# HERMES_HOME=~/.hermes-l2-writer
+
+skills:
+  external_dirs:
+    - ~/.hermes-protected/protocols/   # PROTOCOL files — read-only to agents
+
+model: kimi-k2.5                       # Profile-level model lock

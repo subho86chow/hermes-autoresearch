@@ -1,0 +1,6 @@
+# Runtime artifacts (generated on VPS, not committed)
+.hermes-protected/.integrity_manifest.json
+.hermes-protected/CRITIQUE_LOG.tsv
+
+# OS files
+.DS_Store

@@ -1,0 +1,15 @@
+# Hermes Profile: Critique Agent
+# HERMES_HOME=~/.hermes-critique
+# CRITICAL: This profile has restricted tool access
+
+skills:
+  external_dirs:
+    - ~/.hermes-protected/protocols/   # PROTOCOL files — read-only to agents
+
+model: minimax-m2.5                    # Profile-level model lock
+
+tools:
+  disabled:
+    - skill_manage                     # critique agent cannot write skills
+    - terminal                         # critique agent cannot run shell commands
+    - write_file                       # no direct file writes
