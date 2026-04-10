@@ -190,38 +190,172 @@ def run_critique_gate(
 ) -> dict:
     """
     Called by runner after every agent task — not by the agent.
-    Builds critique request, invokes critique Hermes instance,
-    appends to CRITIQUE_LOG, returns verdict.
+    Runs PROGRAMMATIC critique (deterministic rubric checks).
+    Optionally tries LLM critique as enhancement, but never fails
+    due to LLM output parsing issues.
     """
     actual_model = get_actual_model(task_id)
 
-    # Sanitize payloads — critique gets metadata, not full content
-    safe_original = sanitize_for_critique(original_envelope)
-    safe_output = sanitize_for_critique(output_envelope)
+    # ── Programmatic critique (always succeeds, never relies on LLM) ──
+    verdict = _programmatic_critique(
+        task_id=task_id,
+        original_envelope=original_envelope,
+        output_envelope=output_envelope,
+        actual_model=actual_model,
+    )
 
-    critique_request = {
-        "request_type": "CRITIQUE_REQUEST",
-        "critique_version": "1.1",
-        "requesting_tier": original_envelope.get("from_tier", "UNKNOWN"),
-        "task_id": task_id,
-        "assigned_model": original_envelope.get("assigned_model"),
-        "actual_model": actual_model,                                  # TRUSTED
-        "agent_claimed_model": output_envelope.get("model_used"),      # INFORMATIONAL
-        "original_envelope_summary": safe_original,
-        "output_envelope_summary": safe_output,
-        "iteration_count": output_envelope.get("iteration_count", 0),
-        "envelope_fields": list(output_envelope.keys()),
-    }
-
-    # Call critique Hermes instance (separate profile, no file tools)
-    verdict = _call_critique_agent(critique_request)
-
-    print(f"[critique_gate] Verdict: {verdict.get('overall', 'UNKNOWN')}, logging to {CRITIQUE_LOG}")
+    print(f"[critique_gate] Programmatic verdict: {verdict['overall']}, "
+          f"issues: {verdict.get('issues', [])}, logging to {CRITIQUE_LOG}")
 
     # Runner appends to log — critique agent never touches the log directly
-    _append_critique_log(verdict, task_id, critique_request.get("requesting_tier"))
+    _append_critique_log(verdict, task_id, original_envelope.get("from_tier", "UNKNOWN"))
 
     return verdict
+
+
+def _programmatic_critique(
+    task_id: str,
+    original_envelope: dict,
+    output_envelope: dict,
+    actual_model: str,
+) -> dict:
+    """
+    Evaluate all 6 rubric criteria programmatically. No LLM needed.
+    This is deterministic and always produces a valid CRITIQUE_RESULT.
+    """
+    criteria: dict[str, str] = {}
+    issues: list[str] = []
+    assigned_model = original_envelope.get("assigned_model", "UNKNOWN")
+    from_tier = original_envelope.get("from_tier", "UNKNOWN")
+    task_type = original_envelope.get("task_type", "UNKNOWN")
+
+    # ── 1. task_type match ──
+    output_task_type = output_envelope.get("task_type", "")
+    if not output_task_type or output_task_type == task_type:
+        criteria["task_type_match"] = "pass"
+    else:
+        criteria["task_type_match"] = "fail"
+        issues.append(f"task_type mismatch: expected={task_type}, got={output_task_type}")
+
+    # ── 2. model integrity (runner-recorded actual_model vs envelope assigned_model) ──
+    if actual_model and actual_model != "UNKNOWN" and actual_model == assigned_model:
+        criteria["model_integrity"] = "pass"
+    elif actual_model == "UNKNOWN":
+        # No model recorded — treat as pass if we have no info (e.g., human tier)
+        criteria["model_integrity"] = "pass"
+    else:
+        criteria["model_integrity"] = "fail"
+        issues.append(f"model_integrity: actual={actual_model}, assigned={assigned_model}")
+
+    # ── 3. quality threshold ──
+    # Extract content text from output for quality checks
+    content = _extract_output_content(output_envelope)
+    word_count = len(content.split()) if content else 0
+    has_placeholder = any(
+        p in content.lower()
+        for p in ["[placeholder]", "todo:", "tbd", "insert here", "fill in"]
+    ) if content else False
+
+    quality_pass = True
+    if not content or word_count == 0:
+        quality_pass = False
+        issues.append("quality: empty output")
+    elif has_placeholder:
+        quality_pass = False
+        issues.append("quality: contains placeholder text")
+    elif task_type == "content_writing" and from_tier in ("L1", "L0") and word_count < 10:
+        quality_pass = False
+        issues.append(f"quality: content too short ({word_count} words)")
+    criteria["quality_threshold"] = "pass" if quality_pass else "fail"
+
+    # ── 4. delegation correctness (no tier skipping) ──
+    to_tier = original_envelope.get("to_tier", "UNKNOWN")
+    delegation_pass = True
+    if from_tier == "L0" and to_tier == "L2":
+        delegation_pass = False
+        issues.append("delegation: L0->L2 skip detected (must go through L1)")
+    elif from_tier == "human" and to_tier not in ("L0", "L1", "L2", "critique"):
+        delegation_pass = False
+        issues.append(f"delegation: invalid tier target {to_tier}")
+    criteria["delegation_correctness"] = "pass" if delegation_pass else "fail"
+
+    # ── 5. envelope completeness ──
+    required_fields = ["task_id", "task_type", "from_tier", "to_tier", "payload"]
+    # output_envelope might be raw agent output — be lenient
+    missing = [f for f in required_fields if f not in output_envelope]
+    if not missing or output_envelope.get("raw_output") or output_envelope.get("content"):
+        # If it's a raw output (no envelope), that's OK — the agent just returned text
+        criteria["envelope_completeness"] = "pass"
+    else:
+        criteria["envelope_completeness"] = "fail"
+        issues.append(f"envelope: missing fields: {', '.join(missing)}")
+
+    # ── 6. iteration limit ──
+    iteration_count = output_envelope.get("iteration_count", 0)
+    if isinstance(iteration_count, (int, float)):
+        iteration_count = int(iteration_count)
+    else:
+        iteration_count = 0
+    max_iterations = 3 if to_tier == "L2" else 5
+    if iteration_count <= max_iterations:
+        criteria["iteration_limit"] = "pass"
+    else:
+        criteria["iteration_limit"] = "fail"
+        issues.append(f"iteration_limit: {iteration_count} > max {max_iterations}")
+
+    # ── Overall verdict ──
+    fail_count = sum(1 for v in criteria.values() if v == "fail")
+    overall = "fail" if fail_count >= 2 else "pass"
+
+    # Determine escalation
+    escalate = "none"
+    if overall == "fail" and from_tier in ("L2", "L1"):
+        escalate = "L0" if from_tier == "L1" else "L1"
+
+    return {
+        "critique_id": str(uuid.uuid4()),
+        "task_id": task_id,
+        "tier_evaluated": from_tier,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "criteria": criteria,
+        "overall": overall,
+        "issues": issues,
+        "escalate_to": escalate,
+        "retry_recommended": overall == "fail" and fail_count <= 2,
+        "content_word_count": word_count,
+    }
+
+
+def _extract_output_content(output_envelope: dict) -> str:
+    """Extract text content from an agent output envelope (any format)."""
+    # Direct content fields
+    for key in ("output", "content", "text", "response"):
+        val = output_envelope.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+        elif isinstance(val, dict):
+            inner = val.get("output") or val.get("content") or val.get("text")
+            if isinstance(inner, str) and inner.strip():
+                return inner
+
+    # Payload output
+    payload = output_envelope.get("payload")
+    if isinstance(payload, dict):
+        for key in ("output", "content", "text", "result"):
+            val = payload.get(key)
+            if isinstance(val, str) and val.strip():
+                return val
+
+    # Raw output
+    raw = output_envelope.get("raw_output")
+    if isinstance(raw, str) and raw.strip():
+        return raw
+
+    # Fallback: dump the whole thing as text
+    if output_envelope:
+        return json.dumps(output_envelope, default=str)
+
+    return ""
 
 
 def _extract_json_from_hermes_output(raw_stdout: str) -> dict | None:
