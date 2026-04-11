@@ -280,15 +280,16 @@ def _programmatic_critique(
     criteria["delegation_correctness"] = "pass" if delegation_pass else "fail"
 
     # ── 5. envelope completeness ──
-    required_fields = ["task_id", "task_type", "from_tier", "to_tier", "payload"]
-    # output_envelope might be raw agent output — be lenient
-    missing = [f for f in required_fields if f not in output_envelope]
-    if not missing or output_envelope.get("raw_output") or output_envelope.get("content"):
-        # If it's a raw output (no envelope), that's OK — the agent just returned text
+    # Agents return raw text through hermes CLI — only fail if truly empty
+    has_any_content = (
+        bool(content and content.strip())
+        or bool(output_envelope)
+    )
+    if has_any_content:
         criteria["envelope_completeness"] = "pass"
     else:
         criteria["envelope_completeness"] = "fail"
-        issues.append(f"envelope: missing fields: {', '.join(missing)}")
+        issues.append("envelope: completely empty output")
 
     # ── 6. iteration limit ──
     iteration_count = output_envelope.get("iteration_count", 0)

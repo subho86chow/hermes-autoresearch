@@ -281,6 +281,13 @@ def run_campaign(brief: str) -> dict:
     print(f"  Brief: {brief[:100]}{'...' if len(brief) > 100 else ''}")
     print(f"{'='*60}\n")
 
+    # Clear CRITIQUE_LOG for this campaign run (fresh results only)
+    if CRITIQUE_LOG.exists():
+        CRITIQUE_LOG.write_text(
+            "critique_id\ttask_id\ttier\toverall\tmodel_integrity\tissues\ttimestamp\n"
+        )
+        print(f"[runner] Cleared CRITIQUE_LOG for new campaign")
+
     # Save campaign metadata
     CAMPAIGN_DIR.mkdir(parents=True, exist_ok=True)
     campaign_meta = {
