@@ -1,14 +1,36 @@
 #!/bin/bash
 # launch_system.sh — Hermes Multi-Tier Agent System Launcher
-# Runs integrity checks, locks files, builds manifest, starts L0
+# Runs integrity checks, locks files, builds manifest, then runs campaign.
 #
 # Usage:
-#   chmod +x launch_system.sh
-#   ./launch_system.sh
+#   ./launch_system.sh                          # interactive L0 mode
+#   ./launch_system.sh --brief "Write about AI" # full campaign with critique + logging
+#   ./launch_system.sh --brief @brief.txt       # read brief from file
 #
 # Works from any directory — auto-detects BASE_DIR from script location.
 
 set -uo pipefail
+
+# ---------------------------------------------------------------------------
+# Parse arguments
+# ---------------------------------------------------------------------------
+BRIEF=""
+INTERACTIVE=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --brief)
+            shift
+            BRIEF="$1"
+            shift
+            ;;
+        *)
+            echo "Unknown argument: $1"
+            echo "Usage: $0 [--brief \"text\" | --brief @file.txt]"
+            exit 1
+            ;;
+    esac
+done
 
 # Ensure local bin dirs are in PATH
 export PATH="$HOME/.local/bin:$HOME/.local/share/hermes:$PATH"
@@ -238,10 +260,10 @@ print('  All integrity checks PASSED')
 echo ""
 
 # ---------------------------------------------------------------------------
-# Step 5: Start L0 Meta-Orchestrator
+# Step 5: Run campaign or start interactive mode
 # ---------------------------------------------------------------------------
 
-echo "[5/6] Starting L0 Meta-Orchestrator..."
+echo "[5/6] Starting system..."
 echo ""
 echo "========================================"
 echo " System Ready"
@@ -249,22 +271,57 @@ echo "========================================"
 echo ""
 echo " Profiles at: $BASE_DIR"
 echo ""
-echo "   L0:  HERMES_HOME=$BASE_DIR/hermes-l0 hermes chat"
-echo "   L1c: HERMES_HOME=$BASE_DIR/hermes-l1-content hermes chat"
-echo "   L1r: HERMES_HOME=$BASE_DIR/hermes-l1-research hermes chat"
-echo "   L2w: HERMES_HOME=$BASE_DIR/hermes-l2-writer hermes chat"
-echo "   L2r: HERMES_HOME=$BASE_DIR/hermes-l2-researcher hermes chat"
-echo "   L2t: HERMES_HOME=$BASE_DIR/hermes-l2-trend-analyst hermes chat"
-echo "   CQ:  HERMES_HOME=$BASE_DIR/hermes-critique hermes chat"
-echo ""
-echo " Launching L0..."
-echo ""
 
-# Source .env if available (loads API keys into environment)
-if [ -f "$BASE_DIR/hermes-l0/.env" ]; then
-    set -a
-    source "$BASE_DIR/hermes-l0/.env"
-    set +a
+if [ -n "$BRIEF" ]; then
+    # ── Campaign mode: run through runner.py with full critique + logging ──
+    echo " Mode: Campaign (full pipeline with critique)"
+    echo " Brief: ${BRIEF:0:100}${BRIEF:+$([ ${#BRIEF} -gt 100 ] && echo '...')}"
+    echo ""
+
+    export HERMES_AUTORESEARCH_BASE="$BASE_DIR"
+
+    # Source .env for API keys
+    if [ -f "$BASE_DIR/hermes-l0/.env" ]; then
+        set -a
+        source "$BASE_DIR/hermes-l0/.env"
+        set +a
+    fi
+
+    python3 "$BASE_DIR/hermes-runner/runner.py" --brief "$BRIEF"
+
+    echo ""
+    echo "========================================"
+    echo " Campaign Complete"
+    echo "========================================"
+    echo ""
+    echo " Critique log: $CRITIQUE_LOG"
+    echo " Monitor:      watch -n 5 $BASE_DIR/monitor.sh"
+    echo ""
+    if [ -f "$CRITIQUE_LOG" ]; then
+        echo " Last critique results:"
+        tail -n +2 "$CRITIQUE_LOG" | column -t -s $'\t'
+    fi
+else
+    # ── Interactive mode: start L0 chat ──
+    echo " Mode: Interactive (L0 direct chat — no critique logging)"
+    echo ""
+    echo "   L0:  HERMES_HOME=$BASE_DIR/hermes-l0 hermes chat"
+    echo "   L1c: HERMES_HOME=$BASE_DIR/hermes-l1-content hermes chat"
+    echo "   L1r: HERMES_HOME=$BASE_DIR/hermes-l1-research hermes chat"
+    echo "   L2w: HERMES_HOME=$BASE_DIR/hermes-l2-writer hermes chat"
+    echo "   L2r: HERMES_HOME=$BASE_DIR/hermes-l2-researcher hermes chat"
+    echo "   L2t: HERMES_HOME=$BASE_DIR/hermes-l2-trend-analyst hermes chat"
+    echo "   CQ:  HERMES_HOME=$BASE_DIR/hermes-critique hermes chat"
+    echo ""
+    echo " Launching L0..."
+    echo ""
+
+    # Source .env if available (loads API keys into environment)
+    if [ -f "$BASE_DIR/hermes-l0/.env" ]; then
+        set -a
+        source "$BASE_DIR/hermes-l0/.env"
+        set +a
+    fi
+
+    HERMES_HOME="$BASE_DIR/hermes-l0" hermes chat
 fi
-
-HERMES_HOME="$BASE_DIR/hermes-l0" hermes chat
