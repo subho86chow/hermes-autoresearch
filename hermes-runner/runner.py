@@ -206,11 +206,12 @@ def run_critique(
     task_id: str,
     original_envelope: dict,
     output_envelope: dict,
+    tier_label: str = "",
 ) -> dict:
     """Run critique gate and log result."""
     if cg is None:
         print("[runner] Critique gate not available, logging directly")
-        _direct_log(task_id, original_envelope, output_envelope, "skipped")
+        _direct_log(task_id, original_envelope, output_envelope, "skipped", tier_label=tier_label)
         return {"overall": "pass", "issues": [], "criteria": {}}
 
     try:
@@ -219,6 +220,18 @@ def run_critique(
 
         result = cg.run_critique_gate(task_id, original_envelope, output_envelope)
         print(f"[runner] Critique complete: {result.get('overall', 'unknown')}")
+
+        # Re-log with correct tier label (overwrite what critique_gate wrote)
+        if tier_label and CRITIQUE_LOG.exists():
+            lines = CRITIQUE_LOG.read_text().strip().split("\n")
+            if len(lines) > 1:
+                # Replace the tier in the last line
+                last_line = lines[-1]
+                parts = last_line.split("\t")
+                if len(parts) >= 3:
+                    parts[2] = tier_label  # tier column
+                    lines[-1] = "\t".join(parts)
+                    CRITIQUE_LOG.write_text("\n".join(lines) + "\n")
 
         # Verify log was written
         if CRITIQUE_LOG.exists():
@@ -232,11 +245,11 @@ def run_critique(
         print(f"[runner] Critique error: {e}")
         import traceback
         traceback.print_exc()
-        _direct_log(task_id, original_envelope, output_envelope, f"error: {e}")
+        _direct_log(task_id, original_envelope, output_envelope, f"error: {e}", tier_label=tier_label)
         return {"overall": "fail", "issues": [str(e)], "criteria": {}}
 
 
-def _direct_log(task_id: str, original: dict, output: dict, status: str) -> None:
+def _direct_log(task_id: str, original: dict, output: dict, status: str, tier_label: str = "") -> None:
     """Direct write to CRITIQUE_LOG when critique gate is unavailable."""
     try:
         CRITIQUE_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -244,10 +257,11 @@ def _direct_log(task_id: str, original: dict, output: dict, status: str) -> None
             CRITIQUE_LOG.write_text(
                 "critique_id\ttask_id\ttier\toverall\tmodel_integrity\tissues\ttimestamp\n"
             )
+        tier = tier_label or original.get("to_tier", "?")
         row = "\t".join([
             str(uuid.uuid4()),
             task_id,
-            original.get("to_tier", "?"),
+            tier,
             status,
             "unknown",
             f"runner_direct_log",
@@ -321,10 +335,12 @@ def run_campaign(brief: str) -> dict:
     # ── Step 2: Run Critique on L0 output ────────────────────────────────
     print("[2] Running critique on L0 output...")
 
+    # Override tier label to show evaluated agent, not caller
     l0_critique = run_critique(
         l0_envelope["task_id"],
         l0_envelope,
         l0_output,
+        tier_label="L0",
     )
     print(f"[2] L0 critique: {l0_critique.get('overall', 'unknown')}")
 
@@ -388,6 +404,7 @@ def run_campaign(brief: str) -> dict:
             l1_envelope["task_id"],
             l1_envelope,
             l1_output,
+            tier_label="L1",
         )
         print(f"[4.{i+1}] {profile_name} critique: {l1_critique.get('overall', 'unknown')}")
 
@@ -441,6 +458,7 @@ def run_campaign(brief: str) -> dict:
                 l2_envelope["task_id"],
                 l2_envelope,
                 l2_output,
+                tier_label="L2",
             )
             print(f"[5.{j+1}] {l2_profile_name} critique: {l2_critique.get('overall', 'unknown')}")
 
