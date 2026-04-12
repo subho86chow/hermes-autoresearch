@@ -107,14 +107,8 @@ def call_hermes(
     env = os.environ.copy()
     env["HERMES_HOME"] = str(profile_path)
 
-    # Source .env if it exists in the profile
-    env_file = profile_path / ".env"
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, _, val = line.partition("=")
-                env[key.strip()] = val.strip().strip('"').strip("'")
+    # auth.json in profile handles provider/model/keys (synced by launch_system.sh)
+    # .env is loaded globally by launch_system.sh, not per-profile
 
     cmd = [
         "hermes", "chat",

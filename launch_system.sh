@@ -125,13 +125,20 @@ echo "========================================"
 echo ""
 
 # ---------------------------------------------------------------------------
-# Step 0: Sync API keys and config into each profile
+# Step 0: Sync auth.json and config into each profile
 # ---------------------------------------------------------------------------
 
-echo "[0/6] Syncing Hermes config + API keys into profiles..."
+echo "[0/6] Syncing auth.json + config into profiles..."
 
+AUTH_SOURCE="$HERMES_DEFAULT_HOME/auth.json"
 CONFIG_SOURCE="$HERMES_DEFAULT_HOME/config.yaml"
 ENV_SOURCE="$HERMES_DEFAULT_HOME/.env"
+
+if [ ! -f "$AUTH_SOURCE" ]; then
+    echo "ERROR: auth.json not found at $AUTH_SOURCE"
+    echo "Run 'hermes auth' or 'hermes setup' first."
+    exit 1
+fi
 
 if [ ! -f "$CONFIG_SOURCE" ]; then
     echo "ERROR: Hermes config not found at $CONFIG_SOURCE"
@@ -145,17 +152,22 @@ fi
 
 for profile in "${HERMES_PROFILES[@]}"; do
     if [ -d "$profile" ]; then
-        # Copy config.yaml (profile has its own, but API provider config is needed)
-        if [ -f "$CONFIG_SOURCE" ] && [ ! -f "$profile/.env" ]; then
-            cp "$CONFIG_SOURCE" "$profile/config.user.yaml" 2>/dev/null
-        fi
-        # Copy .env with API keys
-        if [ -f "$ENV_SOURCE" ]; then
-            cp "$ENV_SOURCE" "$profile/.env"
-        fi
-        echo "  Synced: $profile"
+        # Copy auth.json (contains provider credentials, model selections, API keys)
+        cp "$AUTH_SOURCE" "$profile/auth.json"
+        # Copy config.yaml for API provider routing
+        cp "$CONFIG_SOURCE" "$profile/config.user.yaml" 2>/dev/null
+        # .env stays isolated at ~/.hermes/.env — NOT copied into profiles
+        echo "  Synced: $profile (auth.json)"
     fi
 done
+
+# Source root .env into environment for runner.py subprocess
+if [ -f "$ENV_SOURCE" ]; then
+    set -a
+    source "$ENV_SOURCE"
+    set +a
+    echo "  Root .env loaded into environment"
+fi
 
 echo ""
 
@@ -280,13 +292,6 @@ if [ -n "$BRIEF" ]; then
 
     export HERMES_AUTORESEARCH_BASE="$BASE_DIR"
 
-    # Source .env for API keys
-    if [ -f "$BASE_DIR/hermes-l0/.env" ]; then
-        set -a
-        source "$BASE_DIR/hermes-l0/.env"
-        set +a
-    fi
-
     python3 "$BASE_DIR/hermes-runner/runner.py" --brief "$BRIEF"
 
     echo ""
@@ -316,13 +321,6 @@ else
     echo ""
     echo " Launching L0..."
     echo ""
-
-    # Source .env if available (loads API keys into environment)
-    if [ -f "$BASE_DIR/hermes-l0/.env" ]; then
-        set -a
-        source "$BASE_DIR/hermes-l0/.env"
-        set +a
-    fi
 
     HERMES_HOME="$BASE_DIR/hermes-l0" hermes chat
 fi
