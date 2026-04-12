@@ -501,13 +501,12 @@ def _call_critique_agent(request: dict) -> dict:
         result = subprocess.run(
             [
                 "hermes", "chat",
-                "--hermes-home", str(CRITIQUE_PROFILE),
-                "--output-json",
                 "-q", json.dumps(request),
             ],
             capture_output=True,
             text=True,
             timeout=120,
+            env={**os.environ, "HERMES_HOME": str(CRITIQUE_PROFILE)},
         )
         print(f"[critique_gate] hermes returncode: {result.returncode}")
         print(f"[critique_gate] stdout[:500]: {result.stdout[:500]}")
@@ -662,13 +661,12 @@ def invoke_agent(
         result = subprocess.run(
             [
                 "hermes", "chat",
-                "--hermes-home", str(profile_path),
-                "--output-json",
                 "-q", json.dumps(task_envelope),
             ],
             capture_output=True,
             text=True,
             timeout=300,
+            env={**os.environ, "HERMES_HOME": str(profile_path)},
         )
         # Try direct JSON parse first
         try:

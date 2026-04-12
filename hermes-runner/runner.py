@@ -118,8 +118,6 @@ def call_hermes(
 
     cmd = [
         "hermes", "chat",
-        "--hermes-home", str(profile_path),
-        "--output-json",
         "-q", message,
     ]
 
