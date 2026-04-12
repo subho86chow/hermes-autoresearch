@@ -494,6 +494,10 @@ def run_campaign(brief: str) -> dict:
 
     # Setup campaign-scoped logging
     logger = setup_campaign_logging(campaign_ref, BASE_DIR)
+    campaign_log_dir = BASE_DIR / "hermes-protected" / "logs" / campaign_ref
+    print(f"[runner] Campaign log dir: {campaign_log_dir}")
+    print(f"[runner] Campaign log dir exists: {campaign_log_dir.exists()}")
+    print(f"[runner] Campaigns dir: {CAMPAIGN_DIR}")
     timing_calls: list[dict] = []
     seq_counter = 0
 
@@ -767,6 +771,7 @@ def run_campaign(brief: str) -> dict:
     # Save campaign
     campaign_file = CAMPAIGN_DIR / f"{campaign_ref}.json"
     campaign_file.write_text(json.dumps(final_package, indent=2, default=str))
+    print(f"[runner] Campaign JSON saved: {campaign_file} ({campaign_file.stat().st_size} bytes)")
 
     # Summary counts
     pass_count = sum(1 for t in campaign_meta["tasks"] if t.get("critique") == "pass")
@@ -775,6 +780,13 @@ def run_campaign(brief: str) -> dict:
     # Save timing data
     campaign_log_dir = BASE_DIR / "hermes-protected" / "logs" / campaign_ref
     save_timing(campaign_log_dir, timing_calls, total_duration_ms)
+    print(f"[runner] Timing saved: {campaign_log_dir / 'timing.json'}")
+
+    # List all files in campaign log dir
+    if campaign_log_dir.exists():
+        for f in sorted(campaign_log_dir.rglob("*")):
+            if f.is_file():
+                print(f"[runner]   {f.relative_to(campaign_log_dir)} ({f.stat().st_size} bytes)")
 
     # Log campaign completion
     log_stage(logger, "campaign_complete", campaign_ref=campaign_ref,
