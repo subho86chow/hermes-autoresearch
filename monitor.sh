@@ -17,6 +17,7 @@ RESET="\033[0m"
 
 CRITIQUE_LOG="$BASE_DIR/hermes-protected/CRITIQUE_LOG.tsv"
 MANIFEST="$BASE_DIR/hermes-protected/.integrity_manifest.json"
+LOGS_DIR="$BASE_DIR/hermes-protected/logs"
 
 echo ""
 echo "${BOLD}════════════════════════════════════════════════════${RESET}"
@@ -86,6 +87,32 @@ if [ -f "$CRITIQUE_LOG" ] && [ -s "$CRITIQUE_LOG" ]; then
     fi
 else
     echo "  ${DIM}No evaluations yet (empty or missing)${RESET}"
+fi
+echo ""
+
+# ── Structured Logs ──────────────────────────────────────────────────────────
+echo "${BOLD}Structured Logs:${RESET}"
+if [ -d "$LOGS_DIR" ]; then
+    echo "  Location: $LOGS_DIR"
+    if [ -f "$LOGS_DIR/system.log" ]; then
+        sys_size=$(du -h "$LOGS_DIR/system.log" | cut -f1 | tr -d ' ')
+        sys_lines=$(wc -l < "$LOGS_DIR/system.log" | tr -d ' ')
+        echo "  system.log:  ${sys_lines} lines (${sys_size})"
+    fi
+    if [ -f "$LOGS_DIR/critique.jsonl" ]; then
+        cq_lines=$(wc -l < "$LOGS_DIR/critique.jsonl" | tr -d ' ')
+        echo "  critique.jsonl: ${cq_lines} entries"
+    fi
+    # List campaign log directories
+    camp_count=$(find "$LOGS_DIR" -maxdepth 1 -name "camp-*" -type d 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$camp_count" -gt 0 ]; then
+        echo "  Campaign logs:  ${camp_count} campaign(s)"
+        find "$LOGS_DIR" -maxdepth 1 -name "camp-*" -type d -exec basename {} \; | sort -r | head -3 | while read camp; do
+            echo "    ${DIM}$camp${RESET}"
+        done
+    fi
+else
+    echo "  ${DIM}No logs directory yet (created on first campaign)${RESET}"
 fi
 echo ""
 

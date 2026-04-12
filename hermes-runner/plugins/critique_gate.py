@@ -14,8 +14,10 @@ Security layers enforced:
 
 import hashlib
 import json
+import logging
 import os
 import subprocess
+import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,6 +48,22 @@ PROTECTED_FILES: list[Path] = [
 PROTECTED_DIRS: list[Path] = [
     PROTECTED_BASE / "protocols",
 ]
+
+# ---------------------------------------------------------------------------
+# Logging setup — uses logging_config from hermes-runner/
+# Falls back to basic logging if unavailable (e.g., standalone CLI use)
+# ---------------------------------------------------------------------------
+
+try:
+    sys.path.insert(0, str(_BASE / "hermes-runner"))
+    from logging_config import get_system_logger, log_stage
+
+    _sys_logger = get_system_logger(_BASE)
+except ImportError:
+    _sys_logger: logging.Logger | None = None
+
+    def log_stage(logger, stage, **kwargs):
+        print(f"[critique_gate] {stage}: {kwargs}")
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +97,8 @@ def build_integrity_manifest() -> dict[str, str]:
     MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
     MANIFEST_PATH.write_text(json.dumps(manifest, indent=2))
     print(f"[critique_gate] Integrity manifest written: {len(manifest)} files")
+    if _sys_logger:
+        log_stage(_sys_logger, "integrity_manifest_built", file_count=len(manifest))
     return manifest
 
 
@@ -106,6 +126,8 @@ def verify_integrity() -> None:
             violations.append(path_str)
 
     if violations:
+        if _sys_logger:
+            log_stage(_sys_logger, "integrity_violation", violation_count=len(violations), violations=violations)
         raise SecurityError(
             f"[critique_gate] INTEGRITY VIOLATION — halting.\n"
             f"Modified files:\n"
@@ -187,6 +209,8 @@ def run_critique_gate(
     task_id: str,
     original_envelope: dict,
     output_envelope: dict,
+    logger=None,
+    campaign_ref: str = "",
 ) -> dict:
     """
     Called by runner after every agent task — not by the agent.
@@ -207,8 +231,22 @@ def run_critique_gate(
     print(f"[critique_gate] Programmatic verdict: {verdict['overall']}, "
           f"issues: {verdict.get('issues', [])}, logging to {CRITIQUE_LOG}")
 
+    # Structured log
+    if _sys_logger:
+        log_stage(_sys_logger, "critique_complete",
+                  task_id=task_id, overall=verdict["overall"],
+                  issues=verdict.get("issues", []),
+                  criteria=verdict.get("criteria", {}),
+                  campaign_ref=campaign_ref)
+    if logger:
+        log_stage(logger, "critique_gate_result", task_id=task_id,
+                  campaign_ref=campaign_ref, verdict=verdict)
+
     # Runner appends to log — critique agent never touches the log directly
     _append_critique_log(verdict, task_id, original_envelope.get("from_tier", "UNKNOWN"))
+
+    # Also append to structured critique.jsonl
+    _append_critique_jsonl(verdict)
 
     return verdict
 
@@ -549,12 +587,29 @@ def _append_critique_log(verdict: dict, task_id: str, tier: str) -> None:
         datetime.now(timezone.utc).isoformat(),
     ])
     print(f"[critique_gate] Writing row to {CRITIQUE_LOG}: {row[:80]}...")
+    if _sys_logger:
+        log_stage(_sys_logger, "critique_tsv_write", task_id=task_id, tier=tier,
+                  overall=verdict.get("overall", "unknown"), model_integrity=model_integrity)
     try:
         with open(CRITIQUE_LOG, "a") as f:
             f.write(row + "\n")
         print(f"[critique_gate] Write OK. File size: {CRITIQUE_LOG.stat().st_size}")
     except Exception as e:
         print(f"[critique_gate] WRITE FAILED: {e}")
+        if _sys_logger:
+            log_stage(_sys_logger, "critique_tsv_write_error", task_id=task_id, error=str(e))
+
+
+def _append_critique_jsonl(verdict: dict) -> None:
+    """Append structured critique result to critique.jsonl."""
+    try:
+        log_dir = PROTECTED_BASE.parent / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        jsonl_path = log_dir / "critique.jsonl"
+        with open(jsonl_path, "a") as f:
+            f.write(json.dumps(verdict, default=str) + "\n")
+    except Exception as e:
+        print(f"[critique_gate] critique.jsonl write failed: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -576,6 +631,10 @@ def invoke_agent(
     6. Return output or handle failure
     """
     task_id = task_envelope.get("task_id", str(uuid.uuid4()))
+
+    if _sys_logger:
+        log_stage(_sys_logger, "invoke_agent_start", task_id=task_id,
+                  profile=str(profile_path), critique_required=critique_required)
 
     # Step 1: Integrity check before invocation
     verify_integrity()
@@ -673,8 +732,6 @@ class SecurityError(Exception):
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import sys
-
     if len(sys.argv) < 2:
         print("Usage: python critique_gate.py [build_manifest|verify|run <json>]")
         sys.exit(1)

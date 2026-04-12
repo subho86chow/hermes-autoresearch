@@ -295,6 +295,7 @@ if [ -n "$BRIEF" ]; then
     echo "========================================"
     echo ""
     echo " Critique log: $CRITIQUE_LOG"
+    echo " Structured logs: $BASE_DIR/hermes-protected/logs/"
     echo " Monitor:      watch -n 5 $BASE_DIR/monitor.sh"
     echo ""
     if [ -f "$CRITIQUE_LOG" ]; then

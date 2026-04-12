@@ -5,7 +5,7 @@ This is the 'train.py' equivalent. It:
 1. Accepts a campaign brief from the human
 2. Invokes L0, L1, L2 agents via hermes CLI
 3. Runs critique_gate after every task completion
-4. Logs all results to CRITIQUE_LOG.tsv
+4. Logs all results to CRITIQUE_LOG.tsv + structured JSONL logs
 5. Returns the final campaign package
 
 Usage:
@@ -19,6 +19,8 @@ import json
 import os
 import subprocess
 import sys
+import time
+import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,8 +57,18 @@ print(f"[runner] Critique log path: {CRITIQUE_LOG}")
 print(f"[runner] Critique log exists: {CRITIQUE_LOG.exists()}")
 print(f"[runner] Protected dir exists: {(BASE_DIR / 'hermes-protected').exists()}")
 
-# Add plugins to path
+# Add runner dir to path for logging_config, and plugins for critique_gate
+sys.path.insert(0, str(BASE_DIR / "hermes-runner"))
 sys.path.insert(0, str(BASE_DIR / "hermes-runner" / "plugins"))
+
+# Import logging config
+from logging_config import (
+    get_system_logger,
+    log_stage,
+    save_hermes_raw,
+    save_timing,
+    setup_campaign_logging,
+)
 
 # Import critique gate — env var is already set so paths resolve correctly
 try:
@@ -68,16 +80,30 @@ except ImportError as e:
     print(f"[runner] WARNING: critique_gate import failed: {e}")
     cg = None
 
+# System logger for cross-campaign logging
+sys_logger = get_system_logger(BASE_DIR)
+
 
 # ---------------------------------------------------------------------------
 # Hermes CLI Invocation
 # ---------------------------------------------------------------------------
 
-def call_hermes(profile_path: Path, message: str, timeout: int = 300) -> dict:
+def call_hermes(
+    profile_path: Path,
+    message: str,
+    timeout: int = 300,
+    *,
+    logger=None,
+    campaign_ref: str = "",
+    seq: int = 0,
+    tier: str = "",
+) -> dict:
     """
     Call hermes chat with a specific profile.
     Returns parsed JSON output or raw text.
+    Optionally logs invocation, response, timing, and raw output.
     """
+    profile_name = profile_path.name
     env = os.environ.copy()
     env["HERMES_HOME"] = str(profile_path)
 
@@ -99,6 +125,30 @@ def call_hermes(profile_path: Path, message: str, timeout: int = 300) -> dict:
 
     print(f"[runner] Invoking: {profile_path.name} (timeout: {timeout}s)")
 
+    # Log invocation
+    if logger:
+        log_stage(logger, "hermes_invocation", tier=tier, profile=profile_name,
+                  campaign_ref=campaign_ref, seq=seq,
+                  cmd=cmd, timeout=timeout, hermes_home=str(profile_path))
+
+    # Log the envelope being sent
+    if logger:
+        try:
+            envelope = json.loads(message)
+            log_stage(logger, "envelope_sent", tier=tier, profile=profile_name,
+                      campaign_ref=campaign_ref, seq=seq,
+                      task_id=envelope.get("task_id", ""),
+                      envelope=envelope)
+        except json.JSONDecodeError:
+            log_stage(logger, "envelope_sent", tier=tier, profile=profile_name,
+                      campaign_ref=campaign_ref, seq=seq,
+                      message_preview=message[:500])
+
+    start_time = time.monotonic()
+    raw_stdout = ""
+    raw_stderr = ""
+    returncode = -1
+
     try:
         result = subprocess.run(
             cmd,
@@ -107,8 +157,47 @@ def call_hermes(profile_path: Path, message: str, timeout: int = 300) -> dict:
             timeout=timeout,
             env=env,
         )
+        raw_stdout = result.stdout or ""
+        raw_stderr = result.stderr or ""
+        returncode = result.returncode
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+
+        # Save raw output to hermes_raw/
+        if logger:
+            campaign_log_dir = BASE_DIR / "hermes-protected" / "logs" / campaign_ref
+            if campaign_log_dir.exists():
+                save_hermes_raw(campaign_log_dir, profile_name, seq, raw_stdout, raw_stderr)
+
+        # Extract token usage from top-level hermes wrapper BEFORE unwrapping
+        usage_data = {}
         try:
-            parsed = json.loads(result.stdout)
+            top_level = json.loads(raw_stdout)
+            if isinstance(top_level, dict) and "usage" in top_level:
+                usage = top_level["usage"]
+                usage_data = {
+                    "prompt_tokens": usage.get("prompt_tokens", 0),
+                    "completion_tokens": usage.get("completion_tokens", 0),
+                    "total_tokens": usage.get("total_tokens", 0),
+                }
+                # Also grab model from response if present
+                if "model" in top_level:
+                    usage_data["model"] = top_level["model"]
+                if logger:
+                    log_stage(logger, "model_usage", tier=tier, profile=profile_name,
+                              campaign_ref=campaign_ref, seq=seq, **usage_data)
+                if sys_logger:
+                    sys_logger.info({
+                        "campaign_ref": campaign_ref, "tier": tier,
+                        "profile": profile_name, "stage": "model_usage",
+                        **usage_data,
+                    })
+        except json.JSONDecodeError:
+            pass
+
+        # Log response
+        parse_success = True
+        try:
+            parsed = json.loads(raw_stdout)
             # Unwrap hermes JSON wrapper: choices[0].message.content
             if isinstance(parsed, dict) and "choices" in parsed:
                 for choice in parsed["choices"]:
@@ -118,20 +207,59 @@ def call_hermes(profile_path: Path, message: str, timeout: int = 300) -> dict:
                         try:
                             inner = json.loads(content)
                             if isinstance(inner, dict):
+                                if logger:
+                                    log_stage(logger, "hermes_response", tier=tier,
+                                              profile=profile_name, campaign_ref=campaign_ref,
+                                              seq=seq, returncode=returncode,
+                                              duration_ms=duration_ms,
+                                              raw_length=len(raw_stdout),
+                                              parse_success=True,
+                                              unwrapped=True)
                                 return inner
                         except json.JSONDecodeError:
                             pass
                 # If choices exist but no valid inner JSON, return the wrapper
+                if logger:
+                    log_stage(logger, "hermes_response", tier=tier, profile=profile_name,
+                              campaign_ref=campaign_ref, seq=seq, returncode=returncode,
+                              duration_ms=duration_ms, raw_length=len(raw_stdout),
+                              parse_success=True, unwrapped=False)
                 return parsed
+            if logger:
+                log_stage(logger, "hermes_response", tier=tier, profile=profile_name,
+                          campaign_ref=campaign_ref, seq=seq, returncode=returncode,
+                          duration_ms=duration_ms, raw_length=len(raw_stdout),
+                          parse_success=True, unwrapped=False)
             return parsed
         except json.JSONDecodeError:
+            parse_success = False
+            if logger:
+                log_stage(logger, "hermes_response", tier=tier, profile=profile_name,
+                          campaign_ref=campaign_ref, seq=seq, returncode=returncode,
+                          duration_ms=duration_ms, raw_length=len(raw_stdout),
+                          parse_success=False, stderr_preview=raw_stderr[:300])
             return {
-                "raw_output": result.stdout[:2000],
-                "stderr": result.stderr[:500] if result.stderr else "",
+                "raw_output": raw_stdout[:2000],
+                "stderr": raw_stderr[:500] if raw_stderr else "",
                 "parse_error": True,
             }
+
     except subprocess.TimeoutExpired:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        if logger:
+            log_stage(logger, "hermes_response", tier=tier, profile=profile_name,
+                      campaign_ref=campaign_ref, seq=seq, returncode=-1,
+                      duration_ms=duration_ms, error="timeout")
         return {"error": "timeout", "profile": str(profile_path)}
+
+    except Exception as e:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        if logger:
+            log_stage(logger, "error", tier=tier, profile=profile_name,
+                      campaign_ref=campaign_ref, seq=seq,
+                      error_type=type(e).__name__, error_message=str(e),
+                      traceback=traceback.format_exc())
+        return {"error": str(e), "profile": str(profile_path)}
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +335,10 @@ def run_critique(
     original_envelope: dict,
     output_envelope: dict,
     tier_label: str = "",
+    *,
+    logger=None,
+    campaign_ref: str = "",
+    seq: int = 0,
 ) -> dict:
     """Run critique gate and log result."""
     if cg is None:
@@ -221,11 +353,16 @@ def run_critique(
         result = cg.run_critique_gate(task_id, original_envelope, output_envelope)
         print(f"[runner] Critique complete: {result.get('overall', 'unknown')}")
 
+        # Structured critique log
+        if logger:
+            log_stage(logger, "critique_result", tier=tier_label,
+                      campaign_ref=campaign_ref, seq=seq, task_id=task_id,
+                      verdict=result)
+
         # Re-log with correct tier label (overwrite what critique_gate wrote)
         if tier_label and CRITIQUE_LOG.exists():
             lines = CRITIQUE_LOG.read_text().strip().split("\n")
             if len(lines) > 1:
-                # Replace the tier in the last line
                 last_line = lines[-1]
                 parts = last_line.split("\t")
                 if len(parts) >= 3:
@@ -243,8 +380,12 @@ def run_critique(
         return result
     except Exception as e:
         print(f"[runner] Critique error: {e}")
-        import traceback
         traceback.print_exc()
+        if logger:
+            log_stage(logger, "error", tier=tier_label, campaign_ref=campaign_ref,
+                      seq=seq, task_id=task_id,
+                      error_type=type(e).__name__, error_message=str(e),
+                      traceback=traceback.format_exc())
         _direct_log(task_id, original_envelope, output_envelope, f"error: {e}", tier_label=tier_label)
         return {"overall": "fail", "issues": [str(e)], "criteria": {}}
 
@@ -287,8 +428,19 @@ def run_campaign(brief: str) -> dict:
     4. Critique runs after every L2 completion
     5. Results propagate back up
     """
+    campaign_start_time = time.monotonic()
     campaign_ref = f"camp-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
     campaign_id = uuid.uuid4().hex[:8]
+
+    # Setup campaign-scoped logging
+    logger = setup_campaign_logging(campaign_ref, BASE_DIR)
+    timing_calls: list[dict] = []
+    seq_counter = 0
+
+    def next_seq() -> int:
+        nonlocal seq_counter
+        seq_counter += 1
+        return seq_counter
 
     print(f"\n{'='*60}")
     print(f"  Campaign: {campaign_ref}")
@@ -313,9 +465,18 @@ def run_campaign(brief: str) -> dict:
         "tasks": [],
     }
 
+    # Log campaign start
+    log_stage(logger, "campaign_start", campaign_ref=campaign_ref,
+              brief=brief, campaign_id=campaign_id)
+    sys_logger.info({
+        "campaign_ref": campaign_ref, "stage": "campaign_start",
+        "brief": brief[:200],
+    })
+
     # ── Step 1: Invoke L0 Meta-Orchestrator ──────────────────────────────
     print("[1] Invoking L0 Meta-Orchestrator...")
 
+    seq = next_seq()
     l0_envelope = make_envelope(
         from_tier="human",
         to_tier="L0",
@@ -325,7 +486,17 @@ def run_campaign(brief: str) -> dict:
         assigned_model="minimax-m2.5",
     )
 
-    l0_output = call_hermes(PROFILES["L0"], json.dumps(l0_envelope), timeout=300)
+    l0_output = call_hermes(
+        PROFILES["L0"], json.dumps(l0_envelope), timeout=300,
+        logger=logger, campaign_ref=campaign_ref, seq=seq, tier="L0",
+    )
+    timing_calls.append({
+        "seq": seq, "profile": "hermes-l0", "tier": "L0",
+        "task_id": l0_envelope["task_id"],
+        "duration_ms": "see_campaign.jsonl",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+
     print(f"[1] L0 raw output keys: {list(l0_output.keys())}")
 
     # Record model
@@ -335,12 +506,12 @@ def run_campaign(brief: str) -> dict:
     # ── Step 2: Run Critique on L0 output ────────────────────────────────
     print("[2] Running critique on L0 output...")
 
-    # Override tier label to show evaluated agent, not caller
     l0_critique = run_critique(
         l0_envelope["task_id"],
         l0_envelope,
         l0_output,
         tier_label="L0",
+        logger=logger, campaign_ref=campaign_ref, seq=seq,
     )
     print(f"[2] L0 critique: {l0_critique.get('overall', 'unknown')}")
 
@@ -364,7 +535,6 @@ def run_campaign(brief: str) -> dict:
         print("[3] No structured L1 tasks found in L0 output.")
         print("[3] Attempting single-track pass-through...")
 
-        # Try content track
         l1_tasks = [
             {
                 "profile": "L1-content",
@@ -376,6 +546,12 @@ def run_campaign(brief: str) -> dict:
 
     print(f"[3] L0 dispatched {len(l1_tasks)} L1 task(s)")
 
+    # Log tier transition
+    log_stage(logger, "tier_transition", tier="L0", campaign_ref=campaign_ref,
+              from_tier="L0", to_tier="L1",
+              task_count=len(l1_tasks),
+              task_types=[t.get("task_type", "?") for t in l1_tasks])
+
     # ── Step 4: Execute each L1 track ────────────────────────────────────
     l1_results = []
 
@@ -385,6 +561,7 @@ def run_campaign(brief: str) -> dict:
 
         print(f"\n[4.{i+1}] Invoking {profile_name}...")
 
+        seq = next_seq()
         l1_envelope = make_envelope(
             from_tier="L0",
             to_tier="L1",
@@ -394,7 +571,16 @@ def run_campaign(brief: str) -> dict:
             assigned_model=task.get("assigned_model", "minimax-m2.5"),
         )
 
-        l1_output = call_hermes(profile_path, json.dumps(l1_envelope), timeout=300)
+        l1_output = call_hermes(
+            profile_path, json.dumps(l1_envelope), timeout=300,
+            logger=logger, campaign_ref=campaign_ref, seq=seq, tier="L1",
+        )
+        timing_calls.append({
+            "seq": seq, "profile": profile_name, "tier": "L1",
+            "task_id": l1_envelope["task_id"],
+            "duration_ms": "see_campaign.jsonl",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
 
         if cg:
             cg.record_model_call(l1_envelope["task_id"], l1_envelope["assigned_model"])
@@ -405,6 +591,7 @@ def run_campaign(brief: str) -> dict:
             l1_envelope,
             l1_output,
             tier_label="L1",
+            logger=logger, campaign_ref=campaign_ref, seq=seq,
         )
         print(f"[4.{i+1}] {profile_name} critique: {l1_critique.get('overall', 'unknown')}")
 
@@ -430,6 +617,12 @@ def run_campaign(brief: str) -> dict:
                 }
             ]
 
+        # Log tier transition L1 -> L2
+        log_stage(logger, "tier_transition", tier="L1", campaign_ref=campaign_ref,
+                  from_tier="L1", to_tier="L2",
+                  task_count=len(l2_tasks),
+                  task_types=[t.get("task_type", "?") for t in l2_tasks])
+
         # ── Step 5: Execute L2 tasks ─────────────────────────────────────
         l2_results = []
 
@@ -439,6 +632,7 @@ def run_campaign(brief: str) -> dict:
 
             print(f"[5.{j+1}] Invoking {l2_profile_name}...")
 
+            seq = next_seq()
             l2_envelope = make_envelope(
                 from_tier="L1",
                 to_tier="L2",
@@ -448,7 +642,16 @@ def run_campaign(brief: str) -> dict:
                 assigned_model=l2_task.get("assigned_model", "kimi-k2.5"),
             )
 
-            l2_output = call_hermes(l2_profile_path, json.dumps(l2_envelope), timeout=300)
+            l2_output = call_hermes(
+                l2_profile_path, json.dumps(l2_envelope), timeout=300,
+                logger=logger, campaign_ref=campaign_ref, seq=seq, tier="L2",
+            )
+            timing_calls.append({
+                "seq": seq, "profile": l2_profile_name, "tier": "L2",
+                "task_id": l2_envelope["task_id"],
+                "duration_ms": "see_campaign.jsonl",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
 
             if cg:
                 cg.record_model_call(l2_envelope["task_id"], l2_envelope["assigned_model"])
@@ -459,6 +662,7 @@ def run_campaign(brief: str) -> dict:
                 l2_envelope,
                 l2_output,
                 tier_label="L2",
+                logger=logger, campaign_ref=campaign_ref, seq=seq,
             )
             print(f"[5.{j+1}] {l2_profile_name} critique: {l2_critique.get('overall', 'unknown')}")
 
@@ -487,6 +691,7 @@ def run_campaign(brief: str) -> dict:
     # ── Step 6: Synthesize final campaign package ────────────────────────
     print(f"\n[6] Synthesizing campaign package...")
 
+    total_duration_ms = int((time.monotonic() - campaign_start_time) * 1000)
     campaign_meta["status"] = "complete"
     campaign_meta["completed_at"] = datetime.now(timezone.utc).isoformat()
 
@@ -503,15 +708,33 @@ def run_campaign(brief: str) -> dict:
     campaign_file = CAMPAIGN_DIR / f"{campaign_ref}.json"
     campaign_file.write_text(json.dumps(final_package, indent=2, default=str))
 
+    # Summary counts
+    pass_count = sum(1 for t in campaign_meta["tasks"] if t.get("critique") == "pass")
+    fail_count = sum(1 for t in campaign_meta["tasks"] if t.get("critique") == "fail")
+
+    # Save timing data
+    campaign_log_dir = BASE_DIR / "hermes-protected" / "logs" / campaign_ref
+    save_timing(campaign_log_dir, timing_calls, total_duration_ms)
+
+    # Log campaign completion
+    log_stage(logger, "campaign_complete", campaign_ref=campaign_ref,
+              total_tasks=len(campaign_meta["tasks"]),
+              pass_count=pass_count, fail_count=fail_count,
+              total_duration_ms=total_duration_ms)
+    sys_logger.info({
+        "campaign_ref": campaign_ref, "stage": "campaign_complete",
+        "total_tasks": len(campaign_meta["tasks"]),
+        "pass": pass_count, "fail": fail_count,
+        "total_duration_ms": total_duration_ms,
+    })
+
     print(f"\n{'='*60}")
     print(f"  Campaign complete: {campaign_ref}")
     print(f"  Saved to: {campaign_file}")
     print(f"  Tasks executed: {len(campaign_meta['tasks'])}")
-
-    # Summary
-    pass_count = sum(1 for t in campaign_meta["tasks"] if t.get("critique") == "pass")
-    fail_count = sum(1 for t in campaign_meta["tasks"] if t.get("critique") == "fail")
     print(f"  Critique: {pass_count} pass, {fail_count} fail")
+    print(f"  Duration: {total_duration_ms}ms")
+    print(f"  Logs: {campaign_log_dir}")
     print(f"{'='*60}\n")
 
     return final_package
