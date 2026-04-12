@@ -501,6 +501,7 @@ def _call_critique_agent(request: dict) -> dict:
         result = subprocess.run(
             [
                 "hermes", "chat",
+                "-Q",  # quiet/programmatic mode
                 "-q", json.dumps(request),
             ],
             capture_output=True,
@@ -661,6 +662,7 @@ def invoke_agent(
         result = subprocess.run(
             [
                 "hermes", "chat",
+                "-Q",  # quiet/programmatic mode
                 "-q", json.dumps(task_envelope),
             ],
             capture_output=True,

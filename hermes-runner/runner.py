@@ -118,6 +118,7 @@ def call_hermes(
 
     cmd = [
         "hermes", "chat",
+        "-Q",   # quiet/programmatic mode — suppress banner/spinner
         "-q", message,
     ]
 
@@ -193,6 +194,8 @@ def call_hermes(
             pass
 
         # Log response
+        # Hermes chat() returns plain text (the agent's final response string).
+        # Try to parse as JSON envelope first; if that fails, keep full text.
         parse_success = True
         try:
             parsed = json.loads(raw_stdout)
@@ -231,13 +234,24 @@ def call_hermes(
             return parsed
         except json.JSONDecodeError:
             parse_success = False
+
+            # Try to extract JSON envelope embedded in the plain-text response
+            extracted = _extract_json_from_text(raw_stdout)
+            if extracted:
+                if logger:
+                    log_stage(logger, "hermes_response", tier=tier, profile=profile_name,
+                              campaign_ref=campaign_ref, seq=seq, returncode=returncode,
+                              duration_ms=duration_ms, raw_length=len(raw_stdout),
+                              parse_success=True, extracted_from_text=True)
+                return extracted
+
             if logger:
                 log_stage(logger, "hermes_response", tier=tier, profile=profile_name,
                           campaign_ref=campaign_ref, seq=seq, returncode=returncode,
                           duration_ms=duration_ms, raw_length=len(raw_stdout),
                           parse_success=False, stderr_preview=raw_stderr[:300])
             return {
-                "raw_output": raw_stdout[:2000],
+                "output": raw_stdout,
                 "stderr": raw_stderr[:500] if raw_stderr else "",
                 "parse_error": True,
             }
@@ -263,6 +277,54 @@ def call_hermes(
 # ---------------------------------------------------------------------------
 # Envelope Helpers
 # ---------------------------------------------------------------------------
+
+def _extract_json_from_text(text: str) -> dict | None:
+    """
+    Try to extract a JSON dict from a plain-text hermes response.
+    Handles: raw JSON, ```json blocks, and embedded { ... } objects.
+    Returns the first dict that looks like an envelope (has 'task_id' or 'payload').
+    """
+    if not text:
+        return None
+
+    # Try direct parse
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    # Try extracting from markdown code block
+    import re
+    for match in re.finditer(r'```(?:json)?\s*\n?(.*?)```', text, re.DOTALL):
+        try:
+            parsed = json.loads(match.group(1).strip())
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+    # Try finding first { ... } that parses as a dict
+    depth = 0
+    start = None
+    for i, ch in enumerate(text):
+        if ch == '{':
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0 and start is not None:
+                try:
+                    parsed = json.loads(text[start:i+1])
+                    if isinstance(parsed, dict):
+                        return parsed
+                except json.JSONDecodeError:
+                    pass
+                start = None
+
+    return None
 
 def make_envelope(
     from_tier: str,
